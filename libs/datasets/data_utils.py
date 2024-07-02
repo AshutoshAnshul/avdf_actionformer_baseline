@@ -5,6 +5,10 @@ import numpy as np
 import random
 import torch
 
+from einops import rearrange
+from torch import Tensor
+from torch.nn import functional as F
+from typing import List, Tuple
 
 def trivial_batch_collator(batch):
     """
@@ -110,3 +114,53 @@ def truncate_feats(
     data_dict['labels'] = data_dict['labels'][seg_idx].clone()
 
     return data_dict
+
+
+def padding_video(tensor: Tensor, target: int, padding_method: str = "zero", padding_position: str = "tail") -> Tensor:
+    t, c, h, w = tensor.shape
+    padding_size = target - t
+
+    pad = _get_padding_pair(padding_size, padding_position)
+
+    if padding_method == "zero":
+        return F.pad(tensor, pad=[0, 0, 0, 0, 0, 0] + pad)
+    elif padding_method == "same":
+        tensor = rearrange(tensor, "t c h w -> c h w t")
+        tensor = F.pad(tensor, pad=pad + [0, 0], mode="replicate")
+        return rearrange(tensor, "c h w t -> t c h w")
+    else:
+        raise ValueError("Wrong padding method. It should be zero or tail or average.")
+
+
+def padding_audio(tensor: Tensor, target: int,
+    padding_method: str = "zero",
+    padding_position: str = "tail"
+) -> Tensor:
+    t, c = tensor.shape
+    padding_size = target - t
+    pad = _get_padding_pair(padding_size, padding_position)
+
+    if padding_method == "zero":
+        return F.pad(tensor, pad=[0, 0] + pad)
+    elif padding_method == "same":
+        tensor = rearrange(tensor, "t c -> 1 c t")
+        tensor = F.pad(tensor, pad=pad, mode="replicate")
+        return rearrange(tensor, "1 c t -> t c")
+    else:
+        raise ValueError("Wrong padding method. It should be zero or tail or average.")
+    
+def _get_padding_pair(padding_size: int, padding_position: str) -> List[int]:
+    if padding_position == "tail":
+        pad = [0, padding_size]
+    elif padding_position == "head":
+        pad = [padding_size, 0]
+    elif padding_position == "average":
+        padding_head = padding_size // 2
+        padding_tail = padding_size - padding_head
+        pad = [padding_head, padding_tail]
+    else:
+        raise ValueError("Wrong padding position. It should be zero or tail or average.")
+    return pad
+
+def resize_video(tensor: Tensor, size: Tuple[int, int], resize_method: str = "bicubic") -> Tensor:
+    return F.interpolate(tensor, size=size, mode=resize_method)

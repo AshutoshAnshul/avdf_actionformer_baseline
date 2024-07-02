@@ -1,7 +1,8 @@
 import math
 
 import torch
-from torch import nn
+from torchaudio.transforms import MelSpectrogram
+from torch import nn, Tensor
 from torch.nn import functional as F
 
 from .models import register_meta_arch, make_backbone, make_neck, make_generator
@@ -189,6 +190,8 @@ class PtTransformer(nn.Module):
         use_abs_pe,            # if to use abs position encoding
         use_rel_pe,            # if to use rel position encoding
         num_classes,           # number of action classes
+        is_pre_padded,         # whether data is already mapped to max len
+        default_fps,           # default_fps
         train_cfg,             # other cfg for training
         test_cfg               # other cfg for testing
     ):
@@ -200,6 +203,8 @@ class PtTransformer(nn.Module):
         self.reg_range = regression_range
         assert len(self.fpn_strides) == len(self.reg_range)
         self.scale_factor = scale_factor
+        self.is_pre_padded = is_pre_padded
+        self.default_fps = default_fps
         # #classes = num_classes + 1 (background) with last category as background
         # e.g., num_classes = 10 -> 0, 1, ..., 9 as actions, 10 as background
         self.num_classes = num_classes
@@ -332,10 +337,12 @@ class PtTransformer(nn.Module):
 
     def forward(self, video_list):
         # batch the video list into feats (B, C, T) and masks (B, 1, T)
-        batched_inputs, batched_masks = self.preprocessing(video_list)
+        vid_batched_inputs, aud_batched_inputs, batched_masks = self.preprocessing(video_list)
+
+        #code to main encoder and identity network here
 
         # forward the network (backbone -> neck -> heads)
-        feats, masks = self.backbone(batched_inputs, batched_masks)
+        feats, masks = self.backbone(vid_batched_inputs, batched_masks)
         fpn_feats, fpn_masks = self.neck(feats, masks)
 
         # compute the point coordinate along the FPN
@@ -385,46 +392,77 @@ class PtTransformer(nn.Module):
                 out_cls_logits, out_offsets
             )
             return results
+    
+    @staticmethod
+    def _get_log_mel_spectrogram(audio: Tensor) -> Tensor:
+        ms = MelSpectrogram(n_fft=321, n_mels=64)
+        if len(audio.shape)==3:
+            spec = torch.log(ms(audio[:, :, 0]) + 0.01)
+        elif len(audio.shape)==2:
+            spec = torch.log(ms(audio[:, 0]) + 0.01)
+        # assert spec.shape == (64, 2048), "Wrong log mel-spectrogram setup in Dataset"
+        return spec
 
     @torch.no_grad()
     def preprocessing(self, video_list, padding_val=0.0):
         """
             Generate batched features and masks from a list of dict items
         """
-        feats = [x['feats'] for x in video_list]
-        feats_lens = torch.as_tensor([feat.shape[-1] for feat in feats])
+        video = [x['video'] for x in video_list]
+        audio = [x['audio'] for x in video_list]
+        feats_lens = torch.as_tensor([x['actual_frames'] for x in video_list])
         max_len = feats_lens.max(0).values.item()
 
         if self.training:
             assert max_len <= self.max_seq_len, "Input length must be smaller than max_seq_len during training"
             # set max_len to self.max_seq_len
-            max_len = self.max_seq_len
-            # batch input shape B, C, T
-            batch_shape = [len(feats), feats[0].shape[0], max_len]
-            batched_inputs = feats[0].new_full(batch_shape, padding_val)
-            for feat, pad_feat in zip(feats, batched_inputs):
-                pad_feat[..., :feat.shape[-1]].copy_(feat)
+            if self.is_pre_padded:
+                max_len = self.max_seq_len
+                vid_batched_inputs = torch.stack(video, dim=0)
+                aud_batched_inputs = torch.stack(audio, dim=0)
+            else:
+                # batch input shape video - B, T, C, H, W
+                # batch input shape audio - B, T`, C`
+                aud_max_len = int(max_len/self.default_fps * 16000)
+                vid_batch_shape = [len(video), max_len, video[0].shape[1], video[0].shape[2], video[0].shape[3]]
+                aud_batch_shape = [len(video), aud_max_len, audio[0].shape[1]]
+                vid_batched_inputs = video[0].new_full(vid_batch_shape, padding_val)
+                aud_batched_inputs = audio[0].new_full(aud_batch_shape, padding_val)
+
+                for vid, pad_vid in zip(video, vid_batched_inputs):
+                    pad_vid[:vid.shape[0], :, :, :].copy_(vid)
+                for aud, pad_aud in zip(audio, aud_batched_inputs):
+                    pad_aud[:aud.shape[0], :].copy_(aud)
         else:
             assert len(video_list) == 1, "Only support batch_size = 1 during inference"
-            # input length < self.max_seq_len, pad to max_seq_len
-            if max_len <= self.max_seq_len:
-                max_len = self.max_seq_len
+            
+            # # input length < self.max_seq_len, pad to max_seq_len
+            # if max_len <= self.max_seq_len:
+            #     max_len = self.max_seq_len
+            # else:
+            #     # pad the input to the next divisible size
+            #     stride = self.max_div_factor
+            #     max_len = (max_len + (stride - 1)) // stride * stride
+            
+            if not self.is_pre_padded:
+                padding_size = [0, max_len - feats_lens[0]]
+                
+                vid_batched_inputs = F.pad(video[0], padding_size, value=padding_val).unsqueeze(0)
+                aud_batched_inputs = F.pad(audio[0], padding_size, value=padding_val).unsqueeze(0)
             else:
-                # pad the input to the next divisible size
-                stride = self.max_div_factor
-                max_len = (max_len + (stride - 1)) // stride * stride
-            padding_size = [0, max_len - feats_lens[0]]
-            batched_inputs = F.pad(
-                feats[0], padding_size, value=padding_val).unsqueeze(0)
+                vid_batched_inputs = torch.stack(video, dim=0)
+                aud_batched_inputs = torch.stack(audio, dim=0)
 
+        del video, audio
         # generate the mask
         batched_masks = torch.arange(max_len)[None, :] < feats_lens[:, None]
 
         # push to device
-        batched_inputs = batched_inputs.to(self.device)
+        vid_batched_inputs = vid_batched_inputs.to(self.device)
+        aud_batched_inputs = aud_batched_inputs.to(self.device)
         batched_masks = batched_masks.unsqueeze(1).to(self.device)
 
-        return batched_inputs, batched_masks
+        return vid_batched_inputs, aud_batched_inputs, batched_masks
 
     @torch.no_grad()
     def label_points(self, points, gt_segments, gt_labels):
