@@ -249,10 +249,30 @@ class PtTransformer(nn.Module):
 
         # we will need a better way to dispatch the params to backbones / necks
         # backbone network: conv + transformer
-        assert backbone_type in ['convTransformer', 'conv']
+        assert backbone_type in ['MMconvTransformer', 'convTransformer', 'conv']
         if backbone_type == 'convTransformer':
             self.backbone = make_backbone(
                 'convTransformer',
+                **{
+                    'n_in' : input_dim,
+                    'n_embd' : embd_dim,
+                    'n_head': n_head,
+                    'n_embd_ks': embd_kernel_size,
+                    'max_len': max_seq_len,
+                    'arch' : backbone_arch,
+                    'mha_win_size': self.mha_win_size,
+                    'scale_factor' : scale_factor,
+                    'with_ln' : embd_with_ln,
+                    'attn_pdrop' : 0.0,
+                    'proj_pdrop' : self.train_dropout,
+                    'path_pdrop' : self.train_droppath,
+                    'use_abs_pe' : use_abs_pe,
+                    'use_rel_pe' : use_rel_pe
+                }
+            )
+        elif backbone_type == 'MMconvTransformer':
+            self.backbone = make_backbone(
+                'MMconvTransformer',
                 **{
                     'n_in' : input_dim,
                     'n_embd' : embd_dim,
@@ -340,9 +360,11 @@ class PtTransformer(nn.Module):
         vid_batched_inputs, aud_batched_inputs, batched_masks = self.preprocessing(video_list)
 
         #code to main encoder and identity network here
+        av_feat = None
+        id_feat = None
 
         # forward the network (backbone -> neck -> heads)
-        feats, masks = self.backbone(vid_batched_inputs, batched_masks)
+        feats, masks = self.backbone(av_feat, id_feat, batched_masks)
         fpn_feats, fpn_masks = self.neck(feats, masks)
 
         # compute the point coordinate along the FPN
