@@ -10,6 +10,8 @@ from .blocks import MaskedConv1D, Scale, LayerNorm
 from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
 
 from ..utils import batched_nms
+from video_encoder import get_video_encoder
+from audio_encoder import get_audio_encoder
 
 class PtTransformerClsHead(nn.Module):
     """
@@ -246,6 +248,8 @@ class PtTransformer(nn.Module):
         self.test_multiclass_nms = test_cfg['multiclass_nms']
         self.test_nms_sigma = test_cfg['nms_sigma']
         self.test_voting_thresh = test_cfg['voting_thresh']
+
+        #get the encoders and 
 
         # we will need a better way to dispatch the params to backbones / necks
         # backbone network: conv + transformer
