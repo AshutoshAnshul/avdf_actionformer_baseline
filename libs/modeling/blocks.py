@@ -1382,6 +1382,71 @@ def drop_path(x, drop_prob=0.0, training=False):
     return output
 
 
+class FeedForward(nn.Module):
+    def __init__(
+        self,
+        dim,
+        mult = 4,
+        dropout = 0.
+    ):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim * mult),
+            Swish(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * mult, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Scale(nn.Module):
+    def __init__(self, scale, fn):
+        super().__init__()
+        self.fn = fn
+        self.scale = scale
+
+    def forward(self, x, **kwargs):
+        return self.fn(x, **kwargs) * self.scale
+
+class PreNorm(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.fn = fn
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x, **kwargs):
+        x = self.norm(x)
+        return self.fn(x, **kwargs)
+
+class IdentityFrameLevelDotProduct(nn.Module):
+    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
+
+    def __init__(self, id_feat_size=256, ff_mult=4, ff_dropout=0.1):
+        super(IdentityFrameLevelDotProduct, self).__init__()
+
+        self.v_ff1 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
+        self.v_ff2 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
+        self.v_ff1 = Scale(0.5, PreNorm(id_feat_size, self.v_ff1))
+        self.v_ff2 = Scale(0.5, PreNorm(id_feat_size, self.v_ff2))
+
+        self.a_ff1 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
+        self.a_ff2 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
+        self.a_ff1 = Scale(0.5, PreNorm(id_feat_size, self.a_ff1))
+        self.a_ff2 = Scale(0.5, PreNorm(id_feat_size, self.a_ff2))
+
+        self.post_norm = nn.LayerNorm(id_feat_size)
+
+    def forward(self, v_id_feat, a_id_feat):
+        proj_v_id_feat = self.v_ff1(v_id_feat)
+        proj_a_id_feat = self.a_ff1(a_id_feat)
+        dot_prod_score = proj_v_id_feat *  proj_a_id_feat
+        v_id_feat += self.v_ff2(dot_prod_score * v_id_feat)
+        a_id_feat += self.a_ff2(dot_prod_score * a_id_feat)
+        return v_id_feat, a_id_feat
+
+
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
 

@@ -6,12 +6,16 @@ from torch import nn, Tensor
 from torch.nn import functional as F
 
 from .models import register_meta_arch, make_backbone, make_neck, make_generator
-from .blocks import MaskedConv1D, Scale, LayerNorm
+from .blocks import MaskedConv1D, Scale, LayerNorm, IdentityFrameLevelDotProduct
 from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
 
 from ..utils import batched_nms
 from video_encoder import get_video_encoder
 from audio_encoder import get_audio_encoder
+
+from video_identity_encoder import IResNet
+from audio_identity_encoder import ECAPA_TDNN
+from einops import rearrange
 
 class PtTransformerClsHead(nn.Module):
     """
@@ -249,7 +253,18 @@ class PtTransformer(nn.Module):
         self.test_nms_sigma = test_cfg['nms_sigma']
         self.test_voting_thresh = test_cfg['voting_thresh']
 
-        #get the encoders and 
+        #get the encoders and
+
+        # idenity encoders
+        self.video_identity_encoder = IResNet()
+        self.video_identity_encoder.load_state_dict(torch.load('./AVCleanse/saved_models/new_V-Vox2.model'), strict=False)
+        self.video_mlp = nn.Linear(512, 256)
+
+        self.audio_identity_encoder = ECAPA_TDNN()
+        self.audio_identity_encoder.load_state_dict(torch.load('./AVCleanse/saved_models/new_A-Vox2.model'), strict=False)
+        self.audio_mlp = nn.Linear(1536, 256)
+
+        self.id_feat_dot_product = IdentityFrameLevelDotProduct(id_feat_size=256)
 
         # we will need a better way to dispatch the params to backbones / necks
         # backbone network: conv + transformer
@@ -365,7 +380,7 @@ class PtTransformer(nn.Module):
 
         #code to main encoder and identity network here
         av_feat = None
-        id_feat = None
+        id_feat = self.forward_identity_features(vid_batched_inputs, aud_batched_inputs)
 
         # forward the network (backbone -> neck -> heads)
         feats, masks = self.backbone(av_feat, id_feat, batched_masks)
@@ -428,6 +443,21 @@ class PtTransformer(nn.Module):
             spec = torch.log(ms(audio[:, 0]) + 0.01)
         # assert spec.shape == (64, 2048), "Wrong log mel-spectrogram setup in Dataset"
         return spec
+
+    def forward_identity_features(self, audio, video):
+        with torch.no_grad():
+            video_copy = video.clone()
+            video_copy = rearrange(video_copy, 'b c t h w -> (b t) c h w')
+            video_copy = F.interpolate(video_copy, size=(112, 112), mode='bicubic')
+            v_identity_emb = self.video_identity_encoder(video_copy)
+            del video_copy
+            v_identity_emb = rearrange(v_identity_emb, '(b t) f -> b f t', t = video.size(2))
+
+            a_identity_emb = self.audio_identity_encoder(audio)
+        v_identity_emb, a_identity_emb = self.video_mlp(v_identity_emb), self.audio_mlp(a_identity_emb)
+        v_identity_emb, a_identity_emb = self.id_feat_dot_product(v_identity_emb, a_identity_emb)
+        identity_emb = torch.cat((v_identity_emb, a_identity_emb), dim=1)
+        return identity_emb 
 
     @torch.no_grad()
     def preprocessing(self, video_list, padding_val=0.0):
