@@ -19,6 +19,7 @@ DEFAULTS = {
         "default_fps": None,
         # input feat dim
         "input_dim": 2304,
+        "audio_input_dim": 0,
         # number of classes
         "num_classes": 97,
         # downsampling rate of features, 1 to use original resolution
@@ -146,8 +147,10 @@ def load_default_config():
 def _update_config(config):
     # fill in derived fields
     config["model"]["input_dim"] = config["dataset"]["input_dim"]
+    config["model"]["is_pre_padded"] =  config["dataset"]["force_upsampling"]
     config["model"]["num_classes"] = config["dataset"]["num_classes"]
     config["model"]["max_seq_len"] = config["dataset"]["max_seq_len"]
+    config["model"]["default_fps"] =  config["dataset"]["default_fps"]
     config["model"]["train_cfg"] = config["train_cfg"]
     config["model"]["test_cfg"] = config["test_cfg"]
     return config

@@ -4,12 +4,19 @@ import numpy as np
 import argparse
 
 import torch
-from torch.utils.data import Dataset
+import torchaudio
+from torch import Tensor
+from einops import rearrange
+from torch.utils.data import Dataset, DataLoader
 from torch.nn import functional as F
 from torchvision.io import read_video
 
-from datasets import register_dataset
-from data_utils import truncate_feats, padding_audio, padding_video, resize_video
+from pytorch_lightning import LightningDataModule
+from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADERS
+from typing import Optional
+
+from libs.datasets.datasets import register_dataset
+from libs.datasets.data_utils import truncate_feats, padding_audio, padding_video, resize_video
 
 @register_dataset("avdf1m")
 class AVDF1M(Dataset):
@@ -23,24 +30,14 @@ class AVDF1M(Dataset):
         num_frames,      # number of frames for each feat
         max_seq_len,     # maximum sequence length during training
         trunc_thresh,    # threshold for truncate an action segment
-        crop_ratio,      # a tuple (e.g., (0.9, 1.0)) for random cropping
         num_classes,     # number of action categories
-        file_prefix,     # feature file prefix if any
-        file_ext,        # feature file extension if any
         force_upsampling, # force to upsample to max_seq_len
         default_fps = 25,     # default fps
-        downsample_rate = 1, # downsample rate for feats
         img_size = 96 # size of each frame
     ):
         # file path
-        assert os.path.exists(feat_folder) and os.path.exists(json_file)
-        assert crop_ratio == None or len(crop_ratio) == 2
+        assert os.path.exists(feat_folder) and os.path.exists(json_file), f"Path {feat_folder} or {json_file} doesn't exist"
         self.feat_folder = feat_folder
-        if file_prefix is not None:
-            self.file_prefix = file_prefix
-        else:
-            self.file_prefix = ''
-        self.file_ext = file_ext
         self.json_file = json_file
 
         # split / training mode
@@ -51,23 +48,21 @@ class AVDF1M(Dataset):
         self.feat_stride = feat_stride
         self.num_frames = num_frames
         self.default_fps = default_fps
-        self.downsample_rate = downsample_rate
         self.max_seq_len = max_seq_len
         self.trunc_thresh = trunc_thresh
         self.label_dict = None
-        self.crop_ratio = crop_ratio
         self.force_upsampling = force_upsampling
         self.img_size = img_size
 
         # load database and select the subset
         dict_db = self._load_json_db(self.json_file)
         # "empty" noun categories on epic-kitchens
-        assert num_classes == 1 , "Number of fake classifications could be 1 only"
+        assert num_classes == 1 , f"Number of fake classifications could be 1 only got {num_classes}"
         self.data_list = dict_db
 
         # dataset specific attributes
         self.db_attributes = {
-            'dataset_name': 'epic-kitchens-100',
+            'dataset_name': 'avdf1m',
             'tiou_thresholds': np.linspace(0.1, 0.5, 5),
             'empty_label_ids': []
         }
@@ -82,8 +77,8 @@ class AVDF1M(Dataset):
         with open(json_file, 'r') as fid:
             json_db = json.load(fid)
 
-        # fill in the db (immutable afterwards)
-        dict_db = tuple()
+        # fill in the db
+        dict_db = list()
         for meta in json_db:
 
             # get fps if available
@@ -118,7 +113,7 @@ class AVDF1M(Dataset):
                 segments = None
                 labels = None
 
-            dict_db += ({'id': str(meta['file']).strip(),
+            dict_db.append({'id': str(meta['file']).strip(),
                          'fps' : fps,
                          'duration' : duration,
                          'segments' : segments,
@@ -128,7 +123,7 @@ class AVDF1M(Dataset):
                          'audio_fake_segments' : meta['audio_fake_segments'],
                          'labels' : labels,
                          'av_labels' : av_labels
-            }, )
+            }) 
 
         return dict_db
 
@@ -148,7 +143,7 @@ class AVDF1M(Dataset):
         video = video.permute(0, 3, 1, 2) / 255
         audio = audio.permute(1, 0)
         
-        video_frames = video.shape[0]
+        video_frames = min(video.shape[0], self.max_seq_len)
         
 
         # we support both fixed length features / variable length features
@@ -156,9 +151,6 @@ class AVDF1M(Dataset):
         if self.feat_stride > 0 and (not self.force_upsampling):
             # var length features
             feat_stride, num_frames = self.feat_stride, self.num_frames
-            # only apply down sampling here
-            if self.downsample_rate > 1:
-                pass #add something
         # case 2: variable length features for input, yet resized for training
         elif self.feat_stride > 0 and self.force_upsampling:
             # feat_stride = float(
@@ -182,18 +174,23 @@ class AVDF1M(Dataset):
         feat_offset = 0.5 * num_frames / feat_stride
 
         # resize the features if needed
-        if (video_frames != self.max_seq_len) and self.force_upsampling:
-            audio_padding = int(self.max_seq_len/video_item['fps'] * 16000)
-            video = padding_video(video, target=self.max_seq_len)
-            audio = padding_audio(audio, target=audio_padding)
+        # if (video_frames != self.max_seq_len) and self.force_upsampling:
+        #     audio_padding = int(self.max_seq_len/video_item['fps'] * 16000)
+        #     video = padding_video(video, target=self.max_seq_len)
+        #     audio = padding_audio(audio, target=audio_padding)
 
-        elif video_frames>self.max_seq_len:
-            video_frames = self.max_seq_len
-            audio_padding = int(self.max_seq_len/video_item['fps'] * 16000)
-            video = padding_video(video, target=self.max_seq_len)
-            audio = padding_audio(audio, target=audio_padding)
+        # elif video_frames>self.max_seq_len:
+        #     video_frames = self.max_seq_len
+        #     audio_padding = int(self.max_seq_len/video_item['fps'] * 16000)
+        #     video = padding_video(video, target=self.max_seq_len)
+        #     audio = padding_audio(audio, target=audio_padding)
+        
+        #pad to max len
+        audio_padding = int(self.max_seq_len/video_item['fps'] * 16000)
+        video = padding_video(video, target=self.max_seq_len)
+        audio = padding_audio(audio, target=audio_padding)
 
-        video = resize_video(video, (self.img_size, self.img_size)) #shape = (t c h w)
+        video = rearrange(resize_video(video, (self.img_size, self.img_size)), "t c h w -> c t h w")
 
 
         # convert time stamp (in second) into temporal feature grids
@@ -250,6 +247,70 @@ class AVDF1M(Dataset):
 
         return data_dict
     
+    @staticmethod
+    def _get_log_mel_spectrogram(audio: Tensor) -> Tensor:
+        ms = torchaudio.transforms.MelSpectrogram(n_fft=321, n_mels=64)
+        spec = torch.log(ms(audio[:, 0]) + 0.01)
+        # assert spec.shape == (64, 2048), "Wrong log mel-spectrogram setup in Dataset"
+        return spec
+
+
+
+class AVDF1MDataModule(LightningDataModule):
+    train_dataset = AVDF1M
+    val_dataset = AVDF1M
+    test_dataset = AVDF1M
+
+    def __init__(self, train_split='train', val_split='val', test_split='test', root='root',
+                 train_json='train.json', val_json='train.json', test_json='train.json',
+                 feat_stride=1, num_frames=1, max_seq_len=750, trunc_thres=0.5, num_classes=1, force_upsampling=True, 
+                 default_fps=25, img_size=96, batch_size=4, num_workers=4):
+        super().__init__()
+        self.train_split = train_split
+        self.val_split = val_split
+        self.test_split = test_split
+        self.root = root
+        self.train_json = train_json
+        self.val_json = val_json
+        self.test_json = test_json
+        self.feat_stride = feat_stride
+        self.num_frames = num_frames
+        self.max_seq_len = max_seq_len
+        self.trunc_thres = trunc_thres
+        self.num_classes = num_classes
+        self.force_upsampling = force_upsampling
+        self.default_fps = default_fps
+        self.img_size = img_size
+
+        self.batch_size = batch_size
+        self.num_worker =num_workers
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        self.train_dataset = AVDF1M(is_training=True, split=self.train_split, feat_folder=self.root, json_file=self.train_json,
+                                    feat_stride=self.feat_stride, num_frames=self.num_frames, max_seq_len=self.max_seq_len,
+                                    trunc_thresh=self.trunc_thres, num_classes=self.num_classes, force_upsampling=self.force_upsampling, 
+                                    default_fps=self.default_fps, img_size=self.img_size)
+        self.val_dataset = AVDF1M(is_training=False, split=self.val_split, feat_folder=self.root, json_file=self.val_json,
+                                    feat_stride=self.feat_stride, num_frames=self.num_frames, max_seq_len=self.max_seq_len,
+                                    trunc_thresh=self.trunc_thres, num_classes=self.num_classes, force_upsampling=self.force_upsampling, 
+                                    default_fps=self.default_fps, img_size=self.img_size)
+        # self.test_dataset = AVDF1M(is_training=False, split=self.test_split, feat_folder=self.root, json_file=self.test_json,
+        #                             feat_stride=self.feat_stride, num_frames=self.num_frames, max_seq_len=self.max_seq_len,
+        #                             trunc_thresh=self.trunc_thres, num_classes=self.num_classes, force_upsampling=self.force_upsampling, 
+        #                             default_fps=self.default_fps, img_size=self.img_size)
+        
+    def train_dataloader(self) -> TRAIN_DATALOADERS:
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_worker, shuffle=True)
+    
+    def val_dataloader(self) -> EVAL_DATALOADERS:
+        return DataLoader(self.val_dataset, batch_size=self.batch_size*3, num_workers=self.num_worker, shuffle=False)
+    
+    # def test_dataloader(self) -> EVAL_DATALOADERS:
+    #     return DataLoader(self.test_dataset, batch_size=self.batch_size*3, num_workers=self.num_worker, shuffle=False)
+
+
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="VoxCeleb Dataset Test")
@@ -272,11 +333,8 @@ if __name__ == '__main__':
         trunc_thresh=0.5, 
         crop_ratio=[0.9, 1.0],
         num_classes=1,
-        file_prefix='',
-        file_ext='',
         force_upsampling=True,
         default_fps=25,
-        downsample_rate=1,
         img_size=96
     )
 

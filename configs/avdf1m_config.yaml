@@ -1,32 +1,30 @@
-# This is an updated config for using I3D on ActivtyNet, resulting in slightly
-# better performance. To reproduce the setting in our paper, set
-# max_seq_len: 160,
-# n_mha_win_size: [11, 11, 11, 11, -1, -1],
-
-dataset_name: anet
-train_split: ['training']
-val_split: ['validation']
+dataset_name: avdf1m
+train_split: 'train'
+val_split: 'val'
+test_split: 'test'
 dataset: {
-  json_file: ./data/anet_1.3/annotations/anet1.3_i3d_filtered.json,
-  feat_folder: ./data/anet_1.3/i3d_features,
-  file_prefix: v_,
-  file_ext: .npy,
+  train_json_file: train_metadata.json,
+  val_json_file: val_metadata.json,
+  test_json_file: test_metadata.json,
   num_classes: 1,
-  input_dim: 2048,
-  feat_stride: 16,
-  num_frames: 16,
+  input_dim: 256,
+  feat_stride: 1,
+  num_frames: 1,
   default_fps: 25,
   trunc_thresh: 0.5,
-  crop_ratio: [0.9, 1.0],
-  # upsample the features to a fixed length of 192
-  max_seq_len: 192,
+  # upsample the features to a fixed length of 768
+  max_seq_len: 768,
   force_upsampling: True,
+  img_size: 96,
 }
+model_name: LocPointTransformer
 model: {
-  fpn_type: identity,
+  backbone_type: MMconvTransformer,
+  fpn_type: fpn,
   max_buffer_len_factor: 1.0,
   # 192 - 96 - 48 - 24 - 12 - 6
   n_mha_win_size: [7, 7, 7, 7, 7, -1],
+  # shrink the model for reduced input feature channels
   n_head: 4,
   embd_dim: 256,
   fpn_dim: 256,
@@ -39,7 +37,7 @@ opt: {
   weight_decay: 0.05,
 }
 loader: {
-  batch_size: 16,
+  batch_size: 4,
 }
 train_cfg: {
   init_loss_norm: 200,
@@ -62,7 +60,7 @@ test_cfg: {
   # score fusion
   multiclass_nms: False,
   nms_sigma : 0.75,
-  ext_score_file: ./data/anet_1.3/annotations/cuhk_val_simp_share.json,
+  # ext_score_file: None,
   duration_thresh: 0.001,
 }
-output_folder: ./ckpt/
+output_folder: ./paper_results/Revised

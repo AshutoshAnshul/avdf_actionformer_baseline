@@ -5,16 +5,16 @@ from torchaudio.transforms import MelSpectrogram
 from torch import nn, Tensor
 from torch.nn import functional as F
 
-from .models import register_meta_arch, make_backbone, make_neck, make_generator
-from .blocks import MaskedConv1D, Scale, LayerNorm, IdentityFrameLevelDotProduct
-from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
+from libs.modeling.models import register_meta_arch, make_backbone, make_neck, make_generator
+from libs.modeling.blocks import MaskedConv1D, Scale, LayerNorm, IdentityFrameLevelDotProduct
+from libs.modeling.losses import ctr_diou_loss_1d, sigmoid_focal_loss
 
-from ..utils import batched_nms
-from video_encoder import get_video_encoder
-from audio_encoder import get_audio_encoder
+from libs.utils import batched_nms
+from libs.modeling.video_encoder import get_video_encoder
+from libs.modeling.audio_encoder import get_audio_encoder 
 
-from video_identity_encoder import IResNet
-from audio_identity_encoder import ECAPA_TDNN
+from libs.modeling.video_identity_encoder import IResNet
+from libs.modeling.audio_identity_encoder import ECAPA_TDNN
 from einops import rearrange
 
 class PtTransformerClsHead(nn.Module):
@@ -253,15 +253,17 @@ class PtTransformer(nn.Module):
         self.test_nms_sigma = test_cfg['nms_sigma']
         self.test_voting_thresh = test_cfg['voting_thresh']
 
-        #get the encoders and
+        #get the encoders
+        self.video_encoder = get_video_encoder(v_cla_feature_in=input_dim, temporal_size=max_seq_len, v_encoder='resnet')
+        self.audio_encoder = get_audio_encoder(a_cla_feature_in=input_dim, temporal_size=max_seq_len, a_encoder='vit_t')
 
         # idenity encoders
         self.video_identity_encoder = IResNet()
-        self.video_identity_encoder.load_state_dict(torch.load('./AVCleanse/saved_models/new_V-Vox2.model'), strict=False)
+        self.video_identity_encoder.load_state_dict(torch.load('/home/users/ntu/ashutosh/scratch/Codes/avdf_actionformer_baseline/libs/modeling/AVCleanse/saved_models/new_V-Vox2.model'), strict=False)
         self.video_mlp = nn.Linear(512, 256)
 
         self.audio_identity_encoder = ECAPA_TDNN()
-        self.audio_identity_encoder.load_state_dict(torch.load('./AVCleanse/saved_models/new_A-Vox2.model'), strict=False)
+        self.audio_identity_encoder.load_state_dict(torch.load('/home/users/ntu/ashutosh/scratch/Codes/avdf_actionformer_baseline/libs/modeling/AVCleanse/saved_models/new_A-Vox2.model'), strict=False)
         self.audio_mlp = nn.Linear(1536, 256)
 
         self.id_feat_dot_product = IdentityFrameLevelDotProduct(id_feat_size=256)
@@ -379,10 +381,10 @@ class PtTransformer(nn.Module):
         vid_batched_inputs, aud_batched_inputs, batched_masks = self.preprocessing(video_list)
 
         #code to main encoder and identity network here
-        av_feat = None
+        av_feat = self.forward_av_features(vid_batched_inputs, aud_batched_inputs)
         id_feat = self.forward_identity_features(vid_batched_inputs, aud_batched_inputs)
 
-        # forward the network (backbone -> neck -> heads)
+        # forward the network (backbone -> neck -> heads) 
         feats, masks = self.backbone(av_feat, id_feat, batched_masks)
         fpn_feats, fpn_masks = self.neck(feats, masks)
 
@@ -443,8 +445,16 @@ class PtTransformer(nn.Module):
             spec = torch.log(ms(audio[:, 0]) + 0.01)
         # assert spec.shape == (64, 2048), "Wrong log mel-spectrogram setup in Dataset"
         return spec
+    
+    def forward_av_features(self, video, audio):
+        video_enc = self.video_encoder(video)
+        audio_enc = self.audio_encoder(audio)
 
-    def forward_identity_features(self, audio, video):
+        val = torch.cat((video_enc, audio_enc), dim=1)
+        return val
+
+
+    def forward_identity_features(self, video, audio):
         with torch.no_grad():
             video_copy = video.clone()
             video_copy = rearrange(video_copy, 'b c t h w -> (b t) c h w')
@@ -490,7 +500,7 @@ class PtTransformer(nn.Module):
                 for aud, pad_aud in zip(audio, aud_batched_inputs):
                     pad_aud[:aud.shape[0], :].copy_(aud)
         else:
-            assert len(video_list) == 1, "Only support batch_size = 1 during inference"
+            # assert len(video_list) == 1, "Only support batch_size = 1 during inference"
             
             # # input length < self.max_seq_len, pad to max_seq_len
             # if max_len <= self.max_seq_len:
@@ -501,10 +511,11 @@ class PtTransformer(nn.Module):
             #     max_len = (max_len + (stride - 1)) // stride * stride
             
             if not self.is_pre_padded:
-                padding_size = [0, max_len - feats_lens[0]]
+                # padding_size = [0, max_len - feats_lens[0]]
                 
-                vid_batched_inputs = F.pad(video[0], padding_size, value=padding_val).unsqueeze(0)
-                aud_batched_inputs = F.pad(audio[0], padding_size, value=padding_val).unsqueeze(0)
+                # vid_batched_inputs = F.pad(video[0], padding_size, value=padding_val).unsqueeze(0)
+                # aud_batched_inputs = F.pad(audio[0], padding_size, value=padding_val).unsqueeze(0)
+                pass
             else:
                 vid_batched_inputs = torch.stack(video, dim=0)
                 aud_batched_inputs = torch.stack(audio, dim=0)

@@ -13,7 +13,7 @@ import torch.backends.cudnn as cudnn
 
 from .lr_schedulers import LinearWarmupMultiStepLR, LinearWarmupCosineAnnealingLR
 from .postprocessing import postprocess_results
-from ..modeling import MaskedConv1D, Scale, AffineDropPath, LayerNorm
+from ..modeling import MaskedConv1D, Scale, AffineDropPath, LayerNorm, Scale_func
 
 
 ################################################################################
@@ -66,7 +66,7 @@ def make_optimizer(model, optimizer_config):
     decay = set()
     no_decay = set()
     whitelist_weight_modules = (torch.nn.Linear, torch.nn.Conv1d, MaskedConv1D)
-    blacklist_weight_modules = (LayerNorm, torch.nn.GroupNorm)
+    blacklist_weight_modules = (LayerNorm, torch.nn.GroupNorm, torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)
 
     # loop over all modules / params
     for mn, m in model.named_modules():
@@ -81,12 +81,14 @@ def make_optimizer(model, optimizer_config):
             elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
                 # weights of blacklist modules will NOT be weight decayed
                 no_decay.add(fpn)
-            elif pn.endswith('scale') and isinstance(m, (Scale, AffineDropPath)):
+            elif pn.endswith('scale') and isinstance(m, (Scale, AffineDropPath, Scale_func)):
                 # corner case of our scale layer
                 no_decay.add(fpn)
-            elif pn.endswith('rel_pe'):
+            elif pn.endswith('rel_pe'): 
                 # corner case for relative position encoding
                 no_decay.add(fpn)
+            else:
+                decay.add(fpn)
 
     # validate that we considered every parameter
     param_dict = {pn: p for pn, p in model.named_parameters()}
@@ -180,7 +182,7 @@ def make_scheduler(
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer,
                 steps,
-                gamma=schedule_config["gamma"],
+                gamma=optimizer_config["schedule_gamma"],
                 last_epoch=last_epoch
             )
         else:

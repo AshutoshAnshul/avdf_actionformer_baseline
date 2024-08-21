@@ -2,6 +2,7 @@
 import torch
 import math
 import warnings
+from torch import Tensor
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):

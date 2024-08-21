@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from .weight_init import trunc_normal_
+from libs.modeling.weight_init import trunc_normal_
 
 
 class MaskedConv1D(nn.Module):
@@ -1392,7 +1392,7 @@ class FeedForward(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(dim, dim * mult),
-            Swish(),
+            torch.nn.SiLU(),
             nn.Dropout(dropout),
             nn.Linear(dim * mult, dim),
             nn.Dropout(dropout)
@@ -1401,7 +1401,7 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-class Scale(nn.Module):
+class Scale_func(nn.Module):
     def __init__(self, scale, fn):
         super().__init__()
         self.fn = fn
@@ -1428,13 +1428,13 @@ class IdentityFrameLevelDotProduct(nn.Module):
 
         self.v_ff1 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
         self.v_ff2 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
-        self.v_ff1 = Scale(0.5, PreNorm(id_feat_size, self.v_ff1))
-        self.v_ff2 = Scale(0.5, PreNorm(id_feat_size, self.v_ff2))
+        self.v_ff1 = Scale_func(0.5, PreNorm(id_feat_size, self.v_ff1))
+        self.v_ff2 = Scale_func(0.5, PreNorm(id_feat_size, self.v_ff2))
 
         self.a_ff1 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
         self.a_ff2 = FeedForward(dim = id_feat_size, mult = ff_mult, dropout = ff_dropout)
-        self.a_ff1 = Scale(0.5, PreNorm(id_feat_size, self.a_ff1))
-        self.a_ff2 = Scale(0.5, PreNorm(id_feat_size, self.a_ff2))
+        self.a_ff1 = Scale_func(0.5, PreNorm(id_feat_size, self.a_ff1))
+        self.a_ff2 = Scale_func(0.5, PreNorm(id_feat_size, self.a_ff2))
 
         self.post_norm = nn.LayerNorm(id_feat_size)
 

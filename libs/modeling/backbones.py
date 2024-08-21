@@ -2,8 +2,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .models import register_backbone
-from .blocks import (get_sinusoid_encoding, TransformerBlock, MaskedConv1D,
+from libs.modeling.models import register_backbone
+from libs.modeling.blocks import (get_sinusoid_encoding, TransformerBlock, MaskedConv1D,
                      ConvBlock, LayerNorm, MutilModelTransformerBlock)
 
 

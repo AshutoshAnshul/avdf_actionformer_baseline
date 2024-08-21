@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .models import register_generator
+from libs.modeling.models import register_generator
 
 
 class BufferList(nn.Module):

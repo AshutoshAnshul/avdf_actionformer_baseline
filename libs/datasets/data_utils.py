@@ -6,7 +6,7 @@ import random
 import torch
 
 from einops import rearrange
-from torch import Tensor
+from torch import Tensor, stack, tensor, arange
 from torch.nn import functional as F
 from typing import List, Tuple
 

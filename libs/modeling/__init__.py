@@ -1,5 +1,5 @@
 from .blocks import (MaskedConv1D, MaskedMHCA, MaskedMHA, LayerNorm,
-	                 TransformerBlock, ConvBlock, Scale, AffineDropPath)
+	                 TransformerBlock, ConvBlock, Scale, AffineDropPath, Scale_func)
 from .models import make_backbone, make_neck, make_meta_arch, make_generator
 from . import backbones      # backbones
 from . import necks          # necks

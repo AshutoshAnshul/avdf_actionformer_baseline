@@ -2,8 +2,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .models import register_neck
-from .blocks import MaskedConv1D, LayerNorm
+from libs.modeling.models import register_neck
+from libs.modeling.blocks import MaskedConv1D, LayerNorm
 
 @register_neck("fpn")
 class FPN1D(nn.Module):

@@ -1,4 +1,5 @@
-from typing import Literal
+from typing import Literal, Optional
+from abc import ABC
 
 import numpy as np
 from einops.layers.torch import Rearrange
@@ -7,10 +8,40 @@ import torch
 from torch.nn import Sequential, LeakyReLU, MaxPool3d, Module, Linear
 from torchvision.models.video.mvit import MSBlockConfig, _mvit
 
-from utils import Conv3d, Conv1d
-
 import torch.nn as nn
 import torch.nn.functional as F
+
+class _ConvNd(Module, ABC):
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int = 1, padding: int = 0,
+        build_activation: Optional[callable] = None
+    ):
+        super().__init__()
+        self.conv = self.PtConv(
+            in_channels, out_channels, kernel_size, stride=stride, padding=padding
+        )
+        if build_activation is not None:
+            self.activation = build_activation()
+        else:
+            self.activation = None
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.conv(x)
+        if self.activation is not None:
+            x = self.activation(x)
+        return x
+
+
+class Conv1d(_ConvNd):
+    PtConv = torch.nn.Conv1d
+
+
+class Conv2d(_ConvNd):
+    PtConv = torch.nn.Conv2d
+
+
+class Conv3d(_ConvNd):
+    PtConv = torch.nn.Conv3d
 
 
 
@@ -290,12 +321,10 @@ class VideoFeatureProjection(Module):
         return x.permute(0, 2, 1)
 
 
-def get_video_encoder(v_cla_feature_in, temporal_size, v_encoder, ve_features):
+def get_video_encoder(v_cla_feature_in, temporal_size, v_encoder):
     if v_encoder == "resnet":
         video_encoder = VisualFrontend()
         video_encoder.load_state_dict(torch.load('/home/project/12001458/1MDeepfake_challenge/shared_ckpt/visual_frontend.pt'))
-    elif v_encoder == "c3d":
-        video_encoder = C3DVideoEncoder(n_features=ve_features, v_cla_feature_in=v_cla_feature_in)
     elif v_encoder == "mvit_t":
         video_encoder = MvitVideoEncoder(v_cla_feature_in=v_cla_feature_in, temporal_size=temporal_size, mvit_type="mvit_v2_t")
     elif v_encoder == "mvit_s":
